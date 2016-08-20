@@ -27,14 +27,27 @@ angular.module('ngCsv',
         'ngCsv.directives',
         'ngSanitize'
     ]);
+
+// Common.js package manager support (e.g. ComponentJS, WebPack)
+if (typeof module !== 'undefined' && typeof exports !== 'undefined' && module.exports === exports) {
+  module.exports = 'ngCsv';
+}
 /**
  * Created by asafdav on 15/05/14.
  */
 angular.module('ngCsv.services').
-  service('CSV', ['$q', function ($q) {
+service('CSV', ['$q', function($q) {
 
     var EOL = '\r\n';
     var BOM = "\ufeff";
+
+    var specialChars = {
+        '\\t': '\t',
+        '\\b': '\b',
+        '\\v': '\v',
+        '\\f': '\f',
+        '\\r': '\r'
+    };
 
     /**
      * Stringify one field
@@ -42,30 +55,30 @@ angular.module('ngCsv.services').
      * @param options
      * @returns {*}
      */
-    this.stringifyField = function (data, options) {
-      if (options.decimalSep === 'locale' && this.isFloat(data)) {
-        return data.toLocaleString();
-      }
+    this.stringifyField = function(data, options) {
+        if (options.decimalSep === 'locale' && this.isFloat(data)) {
+            return data.toLocaleString();
+        }
 
-      if (options.decimalSep !== '.' && this.isFloat(data)) {
-        return data.toString().replace('.', options.decimalSep);
-      }
+        if (options.decimalSep !== '.' && this.isFloat(data)) {
+            return data.toString().replace('.', options.decimalSep);
+        }
 
-      if (typeof data === 'string') {
-        data = data.replace(/"/g, '""'); // Escape double qoutes
+        if (typeof data === 'string') {
+            data = data.replace(/"/g, '""'); // Escape double qoutes
 
-        if (options.quoteStrings || data.indexOf(',') > -1 || data.indexOf('\n') > -1 || data.indexOf('\r') > -1) {
-            data = options.txtDelim + data + options.txtDelim;
+            if (options.quoteStrings || data.indexOf(',') > -1 || data.indexOf('\n') > -1 || data.indexOf('\r') > -1) {
+                data = options.txtDelim + data + options.txtDelim;
+            }
+
+            return data;
+        }
+
+        if (typeof data === 'boolean') {
+            return data ? 'TRUE' : 'FALSE';
         }
 
         return data;
-      }
-
-      if (typeof data === 'boolean') {
-        return data ? 'TRUE' : 'FALSE';
-      }
-
-      return data;
     };
 
     /**
@@ -73,8 +86,8 @@ angular.module('ngCsv.services').
      * @param input
      * @returns {boolean}
      */
-    this.isFloat = function (input) {
-      return +input === input && (!isFinite(input) || Boolean(input % 1));
+    this.isFloat = function(input) {
+        return +input === input && (!isFinite(input) || Boolean(input % 1));
     };
 
     /**
@@ -86,70 +99,142 @@ angular.module('ngCsv.services').
      *  * addByteOrderMarker - Add Byte order mark, default(false)
      * @param callback
      */
-    this.stringify = function (data, options) {
-      var def = $q.defer();
+    this.stringify = function(data, options) {
+        var def = $q.defer();
 
-      var that = this;
-      var csv = "";
-      var csvContent = "";
+        var that = this;
+        var csv = "";
+        var csvContent = "";
 
-      var dataPromise = $q.when(data).then(function (responseData) {
-        responseData = angular.copy(responseData);
-        // Check if there's a provided header array
-        if (angular.isDefined(options.header) && options.header) {
-          var encodingArray, headerString;
+        var dataPromise = $q.when(data).then(function(responseData) {
 
-          encodingArray = [];
-          angular.forEach(options.header, function (title, key) {
-            this.push(that.stringifyField(title, options));
-          }, encodingArray);
+            var arrData = [];
 
-          headerString = encodingArray.join(options.fieldSep ? options.fieldSep : ",");
-          csvContent += headerString + EOL;
-        }
+            if (angular.isArray(responseData)) {
+                arrData = responseData;
+            } else if (angular.isFunction(responseData)) {
+                arrData = responseData();
+            } else if (angular.isObject(responseData)) {
+                arrData = responseData;
+            }
 
-        var arrData = [];
+            // Check if needs to write multiple csv files
+            if (angular.isDefined(options.multiCsv) && options.multiCsv && typeof options.multiCsv === 'boolean') {
+                angular.forEach(arrData, function(val, key) {
+                    csvContent += that.capitalize(key) + EOL;
+                    JsonObjectToCSV(val, true,key);
+                    csvContent += EOL;
+                });
+            } else {
+                JsonObjectToCSV(arrData, false,"");
+            }
 
-        if (angular.isArray(responseData)) {
-          arrData = responseData;
-        }
-        else if (angular.isFunction(responseData)) {
-          arrData = responseData();
-        }
+            function addKeysColumnHeader(originData, multiCsv) {
+                // Check if using keys as labels
+                if (angular.isDefined(options.label) && options.label && typeof options.label === 'boolean') {
+                    var labelArray, labelString, iterator;
 
-        angular.forEach(arrData, function (row, index) {
-          var dataString, infoArray;
+                    labelArray = [];
 
-          infoArray = [];
+                    if (multiCsv) {
+                        iterator = !!options.columnOrder ? options.columnOrder : originData[0];
+                    } else {
+                        iterator = !!options.columnOrder ? options.columnOrder : arrData[0];
+                    }
 
-          angular.forEach(row, function (field, key) {
-            this.push(that.stringifyField(field, options));
-          }, infoArray);
+                    angular.forEach(iterator, function(value, label) {
+                        var val = !!options.columnOrder ? value : label;
+                        this.push(that.stringifyField(val, options));
+                    }, labelArray);
+                    labelString = labelArray.join(options.fieldSep ? options.fieldSep : ",");
+                    csvContent += labelString + EOL;
+                }
+            }
 
-          dataString = infoArray.join(options.fieldSep ? options.fieldSep : ",");
-          csvContent += index < arrData.length ? dataString + EOL : dataString;
+            function JsonObjectToCSV(originData, multiCsv,dataLabel) {
+                addHeader(dataLabel, multiCsv);
+                addKeysColumnHeader(originData, multiCsv);
+                angular.forEach(originData, function(oldRow, index) {
+                    var row = angular.copy(originData[index]);
+                    var dataString, infoArray;
+
+                    infoArray = [];
+
+                    var iterator = !!options.columnOrder ? options.columnOrder : row;
+                    angular.forEach(iterator, function(field, key) {
+                        var val = !!options.columnOrder ? row[field] : field;
+                        this.push(that.stringifyField(val, options));
+                    }, infoArray);
+
+                    dataString = infoArray.join(options.fieldSep ? options.fieldSep : ",");
+                    csvContent += index < originData.length ? dataString + EOL : dataString;
+                });
+            }
+
+            function addHeader(key, multiCsv) {
+                // Check if there's a provided header array
+                if (angular.isDefined(options.header) && options.header) {
+                    var encodingArray, headerString;
+
+                    encodingArray = [];
+                    if (multiCsv) {
+                        angular.forEach(options.header[key], function(title, key) {
+                            this.push(that.stringifyField(title, options));
+                        }, encodingArray);
+                    } else {
+                        angular.forEach(options.header, function(title, key) {
+                            this.push(that.stringifyField(title, options));
+                        }, encodingArray);
+                    }
+
+                    headerString = encodingArray.join(options.fieldSep ? options.fieldSep : ",");
+                    csvContent += headerString + EOL;
+                }
+            }
+
+            // Add BOM if needed
+            if (options.addByteOrderMarker) {
+                csv += BOM;
+            }
+
+            // Append the content and resolve.
+            csv += csvContent;
+            def.resolve(csv);
         });
 
-        // Add BOM if needed
-        if (options.addByteOrderMarker) {
-          csv += BOM;
+        if (typeof dataPromise['catch'] === 'function') {
+            dataPromise['catch'](function(err) {
+                def.reject(err);
+            });
         }
 
-        // Append the content and resolve.
-        csv += csvContent;
-        def.resolve(csv);
-      });
-
-      if (typeof dataPromise['catch'] === 'function') {
-        dataPromise['catch'](function (err) {
-          def.reject(err);
-        });
-      }
-
-      return def.promise;
+        return def.promise;
     };
-  }]);
-/**
+
+    /**
+     * Helper function to check if input is really a special character
+     * @param input
+     * @returns {boolean}
+     */
+    this.isSpecialChar = function(input) {
+        return specialChars[input] !== undefined;
+    };
+
+    /**
+     * Helper function to get what the special character was supposed to be
+     * since Angular escapes the first backslash
+     * @param input
+     * @returns {special character string}
+     */
+    this.getSpecialChar = function(input) {
+        return specialChars[input];
+    };
+
+    this.capitalize = function(input) {
+        return input.charAt(0).toUpperCase() + input.slice(1);
+    };
+
+}]);/**
  * ng-csv module
  * Export Javascript's arrays to csv files from the browser
  *
@@ -163,6 +248,7 @@ angular.module('ngCsv.directives').
         data: '&ngCsv',
         filename: '@filename',
         header: '&csvHeader',
+        columnOrder: '&csvColumnOrder',
         txtDelim: '@textDelimiter',
         decimalSep: '@decimalSeparator',
         quoteStrings: '@quoteStrings',
@@ -170,7 +256,9 @@ angular.module('ngCsv.directives').
         lazyLoad: '@lazyLoad',
         addByteOrderMarker: "@addBom",
         ngClick: '&',
-        charset: '@charset'
+        charset: '@charset',
+        label: '&csvLabel',
+        multiCsv: '&multiCsv'
       },
       controller: [
         '$scope',
@@ -200,7 +288,14 @@ angular.module('ngCsv.directives').
               addByteOrderMarker: $scope.addByteOrderMarker
             };
             if (angular.isDefined($attrs.csvHeader)) options.header = $scope.$eval($scope.header);
+            if (angular.isDefined($attrs.csvColumnOrder)) options.columnOrder = $scope.$eval($scope.columnOrder);
+            if (angular.isDefined($attrs.csvLabel)) options.label = $scope.$eval($scope.label);
+            if (angular.isDefined($attrs.multiCsv)) options.multiCsv = $scope.$eval($scope.multiCsv);
+
             options.fieldSep = $scope.fieldSep ? $scope.fieldSep : ",";
+
+            // Replaces any badly formatted special character string with correct special character
+            options.fieldSep = CSV.isSpecialChar(options.fieldSep) ? CSV.getSpecialChar(options.fieldSep) : options.fieldSep;
 
             return options;
           }
@@ -236,12 +331,13 @@ angular.module('ngCsv.directives').
             navigator.msSaveBlob(blob, scope.getFilename());
           } else {
 
-            var downloadLink = angular.element('<a></a>');
+            var downloadContainer = angular.element('<div data-tap-disabled="true"><a></a></div>');
+            var downloadLink = angular.element(downloadContainer.children()[0]);
             downloadLink.attr('href', window.URL.createObjectURL(blob));
             downloadLink.attr('download', scope.getFilename());
             downloadLink.attr('target', '_blank');
 
-            $document.find('body').append(downloadLink);
+            $document.find('body').append(downloadContainer);
             $timeout(function () {
               downloadLink[0].click();
               downloadLink.remove();
